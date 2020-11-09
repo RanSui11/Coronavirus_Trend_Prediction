@@ -1,0 +1,311 @@
+---
+title: "COVID-19 Prediction Flexdashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    social: menu
+    source_code: embed
+runtime: shiny
+---
+
+```{r global, include=FALSE}
+# load data in 'global' chunk so it can be shared by all users of the dashboard
+library(flexdashboard); library(plotly); library(shiny);
+library(e1071); library(ggplot2); 
+library(tidyverse); 
+library(rvest);
+library(highcharter); 
+# load data
+dat <- read.csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv")
+
+
+# delete redundant columns
+datnew <- dat[-c(1:6,8:11)] 
+
+# add case number 
+statecase <- as.data.frame(datnew %>%                                      
+  group_by(Province_State) %>%                      
+  summarise_if(is.numeric,funs(sum)))
+# delete princess *2 
+statecase <- statecase[-c(3,10,14),]  
+date <- names(statecase)[-c(1)]
+lod <- length(date)  # length of date 
+time_order_now <- c(1:lod) # 1,2,3... the last day of record
+dif <- 7 # days in future
+future_forecast <- c(1:(lod+dif)) # 1,2,3...last day of prediction
+adjusted_dates <- c((lod+1):(lod+dif)) # prediction date 
+# state name
+state_name <- as.character(statecase$Province_State)
+
+# us map
+cov19_us <- read_html('https://www.worldometers.info/coronavirus/country/us/')
+
+df <- cov19_us %>%
+  html_nodes("table") %>%
+  .[[1]] %>%
+  html_table()  %>% as.data.frame()
+
+df$TotalCases <- gsub(",", "",df$TotalCases)
+#df <- df[1:51,]
+df <- df[-c(nrow(df)),]
+
+df_plot <- df[2:56,1:2]
+df_plot["lognumber"] <- log(as.numeric(df_plot$TotalCases))
+df_plot["knumber"] <- round(as.numeric(df_plot$TotalCases)/1000,digits=1)
+mapdata <- get_data_from_map(download_map_data("countries/us/us-all"))
+glimpse(mapdata)
+
+# world 
+cov19_world <- read_html('https://www.worldometers.info/coronavirus/')
+
+df_world <- cov19_world %>%
+  html_nodes("table") %>%
+  .[[1]] %>%
+  html_table()  %>% as.data.frame()
+
+df_world <- df_world[nrow(df_world),]
+```
+
+
+
+United States
+=======================================================================
+
+Column {.sidebar data-width=324}
+-----------------------------------------------------------------------
+Last Updated on:
+```{r}
+rmarkdown::render_delayed({div(Sys.time())})
+```
+
+```{r}
+selectInput('state', 'State', state_name,selected = NULL)
+```
+
+```{r}
+hcmap("countries/us/us-all", data = df_plot, value = "knumber",
+      joinBy = c("name", "USAState"), name = "Total Cases",
+      dataLabels = list(enabled = TRUE, format = '{point.name}'),
+      borderColor = "#000000", borderWidth = 1,
+      tooltip = list(valueSuffix = " k"))
+       
+```
+
+
+Column {.tabset}
+-----------------------------------------------------------------------
+### Prediction
+```{r}
+svmmodel <- function(input_state_name,state_name,time_order_now,
+                    statecase,future_forecast,lod,dif){
+  index <- match(input_state_name,state_name)
+  x <- time_order_now
+  y <- as.numeric(statecase[index,1:lod+1])
+  model <- svm(x, y,kernel="polynomial") 
+  pred <- predict(model, future_forecast)
+  # parameter 
+  error <- y - pred[1:lod]
+  svm_error <- sqrt(mean(error^2))
+  svm_tune <- tune.svm(time_order_now,y,kernel = "polynomial",
+                       gamma=c(0.1, 1, 5),
+                       coef0 = c(0.05,0.1, 1, 5))
+  best.svm = svm_tune$best.model
+  newprediction = predict(best.svm, future_forecast)
+  error_new <- y - newprediction[1:lod]
+  svm_error_new <- sqrt(mean(error_new^2))
+  
+  # create dataframe to plot
+  date_plot_true <- seq(as.Date("2020/1/22"), by = "day", length.out = lod)
+  date_plot_pred <- seq(as.Date("2020/1/22"), by = "day", length.out = lod+dif)
+  
+  truevalue <- data.frame(
+    date_plot_true,
+    y)
+  
+  prediction <- data.frame(
+    date_plot_pred,
+    newprediction)
+  
+  cols1 = c("dates", "Confirmed number")
+  cols2 = c("dates","SVM Prediction")
+  colnames(truevalue) = cols1
+  colnames(prediction) = cols2
+  
+  # glm model
+
+  #find first positive case
+  stateweneed = input$state
+  
+  state_confirmed = filter(datnew, Province_State == stateweneed)[-1] %>% colSums() %>% as.data.frame()
+  names(state_confirmed) = c('confirmed')
+  
+  #find first positive case
+  first_positive = which(state_confirmed$confirmed > 0)[1]
+  
+  time = as.numeric(seq(first_positive,nrow(state_confirmed)))
+  
+  dat = data.frame(time, (time - first_positive + 1),
+                   state_confirmed[first_positive:nrow(state_confirmed),])
+  names(dat) = c('days since 1.22.20', 'days_since_first_case','cumulative_confirmed')
+  
+  #train model 
+  glm1 = glm(cumulative_confirmed ~ log(days_since_first_case), 
+             data = dat,
+             family= quasipoisson(link = 'log'))
+  
+  #make prefiction
+  predicted_time = as.numeric(seq(first_positive,nrow(state_confirmed)+7))
+  predicted_case = exp(glm1$coefficients[1]+log(predicted_time-first_positive+1)*glm1$coefficients[2])
+  
+  # create dataframe of glm to plot
+  first_positive_date <- as.character(seq(as.Date("2020/1/22"), 
+                                          by = "day", length.out = first_positive)[first_positive])
+  glm_date_seq <- seq(as.Date(first_positive_date), by = "day", length.out = lod+dif-first_positive+1)
+  glmprediction <- data.frame(
+    glm_date_seq,
+    round(predicted_case,digits=0)
+  )
+  
+  col3 = c("dates","GLM Prediction")
+  colnames(glmprediction) <- col3
+  
+  # create combine dataframe
+  combinedf <- right_join(truevalue,prediction,by="dates")
+  combinedf <- right_join(glmprediction,combinedf,by="dates")
+  combinedfmelted <- reshape2::melt(combinedf,id.var="dates")
+  
+  return(combinedfmelted)
+}
+
+renderPlotly({
+ 
+  g <- ggplot(data=svmmodel(input$state,state_name,time_order_now,
+                              statecase,future_forecast,lod,dif),
+            aes(x=dates,y=value,col=variable)) + 
+  geom_line(size=1) + 
+  labs(x = "Date",
+       y = "Cumulative Confirmed Cases",
+       color = "Legend") +
+  ggtitle(paste("Projected Trend of Confirmed Covid-19 Case in",input$state)) +
+  theme(
+    plot.title = element_text(size=12, face="bold",hjust=0.5),
+    axis.title.x = element_text(size=8, face="bold"),
+    axis.title.y = element_text(size=8, face="bold")
+  )
+  
+  ggplotly(g,dynamicTicks=TRUE)
+})
+
+```
+
+### US data
+```{r}
+renderTable({
+  lastday <- statecase[,c(1,(lod-5):(lod+1))]
+  col2 <- as.character(seq(as.Date("2020/1/22"), by = "day", length.out = lod)[(lod-6):(lod)])
+  colnames(lastday) <- c("State",col2)
+  lastday
+})
+```
+
+World Data
+=======================================================================
+
+Row
+-------------------------------------
+
+### Summary of coronavirus data aroung the globe
+```{r}
+renderTable({
+  
+cov19_world <- read_html('https://www.worldometers.info/coronavirus/')
+
+df_world <- cov19_world %>%
+  html_nodes("table") %>%
+  .[[1]] %>%
+  html_table()  %>% as.data.frame()
+})
+```
+
+
+About
+=======================================================================
+
+Column {.tabset}
+-------------------------------------
+### Flexdashboard Overview
+
+**Data Acquisition**
+
+The raw data used for model training is pulled from [here](https://github.com/CSSEGISandData/COVID-19) COVID-19 Data Repository by the Center for Systems Science and Engineering (CSSE) at Johns Hopkins University every time the dashboard refreshes.
+
+**Model Development**
+
+The flexdashboard contains two prediction models forecasting the confirmed Covid-19 cases for the week ahead. 
+
+* Support Vector Machine (SVM) Regression Model
+
+Apply a SVR model with a polynomial kernel to fit the cumulative confirmed case data. Tune model parameters using trial and error. Use the optiaml SVR model to predict the confirmed case for the week ahead.
+
+
+
+* GlM Model
+
+A quasipoisson model was applied to predict the trend of confirmed Covid-19 cases for the week ahead. It is assumed tha the response variable Y (cumulative confirmed cases) follows a poisson distribution, and the logrithm of its expected value can be modeled by a linear combinatino of parameters (the log value of days since first positive Covid-19 case confirmed in that state).
+
+
+$$log(E[Y_i | X_i = x_i]) = log(\mu_i) = \beta_0 + \beta_1x_i$$
+
+
+**Interactive Component and Visualization**
+
+Select which state of interest from the sidebar on the right to see the projected confirmed Covid cases for the week ahead, and the dashboard will display the cumulative cases of Covid-19 of that state since Jan,22,2020 and two predicted trends for the week ahead by the two models mentioned above.
+
+
+Hover over the hcmap at the left bottom corner to see the confirmed cases of 50 states. Values are in k scale. Darker the color, more confirmed cases of Covid-19.
+
+
+### Disclaimer
+
+This flexdashboard was made as a final project for the course the JHU Data Science for Biomedical Engineering taught by Brian Caffo. This is not official health information. Under no circumstances should this app be used for medical guidance. 
+
+
+Please refer to official CDC and WHO website for recommendations and guidance.
+
+CDC
+
+https://www.cdc.gov/coronavirus/2019-ncov/index.html
+
+WHO
+
+https://www.who.int/emergencies/diseases/novel-coronavirus-2019
+
+
+### References
+Data (prediction model)
+
+https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv
+
+
+Data (domestic/USA)
+
+https://www.worldometers.info/coronavirus/country/us/
+
+Data (worldwide)
+
+https://www.worldometers.info/coronavirus/
+
+CDC travel restrictions
+
+https://www.cdc.gov/coronavirus/2019-ncov/travelers/map-and-travel-notices.html
+
+
+
+
+
+
+
+
+
+
+
