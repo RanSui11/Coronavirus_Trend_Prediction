@@ -2,7 +2,7 @@
 
 Access the app here: [https://hxiong6.shinyapps.io/dsproject/](https://hxiong6.shinyapps.io/dsproject/)   
 Access the presentation here: [https://drive.google.com/file/d/1L4v0GXLsv7oj_Gmnb7GMZ5sd_Ef5fBt1/view](https://drive.google.com/file/d/1L4v0GXLsv7oj_Gmnb7GMZ5sd_Ef5fBt1/view)  
-Access the presentation by teammate (Hao Xiong) here: [https://drive.google.com/open?id=1YZOjahKyRXSEcnARddSxtDW1WKLbdJsM](https://drive.google.com/open?id=1YZOjahKyRXSEcnARddSxtDW1WKLbdJsM)
+
 
 
 ## Library requirements
